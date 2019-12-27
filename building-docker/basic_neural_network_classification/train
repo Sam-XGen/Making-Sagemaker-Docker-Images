@@ -1,0 +1,408 @@
+#!/usr/bin/env python
+
+# A sample training component that trains a simple scikit-learn decision tree model.
+# This implementation works in File mode and makes no assumptions about the input file names.
+# Input is specified as CSV with a data point in each row and the labels in the first column.
+
+from __future__ import print_function
+
+import os
+import json
+import pickle
+import sys
+import traceback
+import datetime
+
+import pandas as pd
+import scipy
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import confusion_matrix, accuracy_score, f1_score, recall_score, precision_score, fbeta_score
+from sklearn.neural_network import MLPClassifier
+
+# These are the paths to where SageMaker mounts interesting things in your container.
+
+prefix = '/opt/ml/'
+
+input_path = prefix + 'input/data'
+output_path = os.path.join(prefix, 'output')
+model_path = os.path.join(prefix, 'model')
+param_path = os.path.join(prefix, 'input/config/hyperparameters.json')
+
+# This algorithm has a single channel of input data called 'training'. Since we run in
+# File mode, the input files are copied to the directory specified here.
+training_path = os.path.join(input_path, 'training')
+target_path = os.path.join(input_path, 'target')
+
+
+# The function to execute the training.
+def train():
+    print('Start Process.')
+    try:
+        # Read in any hyperparameters that the user passed with the training job
+        with open(param_path, 'r') as tc:
+            trainingParams = json.load(tc)
+
+
+            
+        # Take the set of files and read them all into a single pandas dataframe
+        train_input_files = [ os.path.join(training_path, file) for file in os.listdir(training_path) ]
+        try:
+            target_input_files = [ os.path.join(target_path, file) for file in os.listdir(target_path) ]
+            
+            if len(train_input_files) == 0 or len(target_input_files) == 0:
+                raise ValueError(('There are no files in {}.\n' +
+                              'This usually indicates that the channel ({}) was incorrectly specified,\n' +
+                              'the data specification in S3 was incorrectly specified or the role specified\n' +
+                              'does not have permission to access the data.').format(training_path, 'training'))
+                              
+            target_file = True
+        except:
+            print('No Target file')
+            target_file = False
+                    
+
+        print('Import Data.')  
+        data_type = trainingParams.get('data_type', None)
+        if data_type is not None:
+            data_type = str(data_type)
+        else:
+            data_type = 'numeric'
+        
+        print(train_input_files)
+        if target_file:
+            print(target_input_files)
+    
+        
+        #determine the type of data imported.  
+        if data_type == 'text' or data_type == 'word':
+            train_X = scipy.sparse.load_npz(train_input_files[0])
+            train_y = pd.read_csv(target_input_files[0], header=None)
+            print('Text data was imported.')
+        else:
+            imported_data = pd.read_csv(train_input_files[0], header=None)
+            print('Numeric data was imported.')
+
+
+
+        time_series = trainingParams.get('time_series', None)
+        if time_series is not None:
+            time_series = str(time_series)
+        else:
+            time_series = 'no'
+            
+    except Exception as e:
+        trc = traceback.format_exc()
+        with open(os.path.join(output_path, 'failure'), 'w') as s:
+            s.write('Exception during data import: ' + str(e) + '\n' + trc)
+        # Printing this causes the exception to be in the training job logs, as well.
+        print('Exception during data import: ' + str(e) + '\n' + trc, file=sys.stderr)
+        # A non-zero exit code causes the training job to be marked as Failed.
+        sys.exit(255)  
+        
+        
+        
+        print('Time series train/validation split.')
+    try:    
+        #determine if the data has a time series
+        if time_series == 'no' or time_series == 'false':
+            #split data into train and vaildation data
+            X_train, X_valid, y_train, y_valid = train_test_split(imported_data.loc[:,1:], imported_data.loc[:,0], test_size=0.1, random_state=42)
+        
+        else:
+            try:
+                imported_data.loc[:, 1] = imported_data.loc[:, 1].map(lambda x: datetime.datetime.strptime(x, '%Y-%m-%d'))
+                print('Date was converted to datetime')
+            except:
+                print('Date is already datatime.')
+            
+            
+            try:
+                year, month, day = time_series.split('-')
+                print('Date was split by -')
+            except:
+                year, month, day = time_series.split('/')
+                print('Date was split by /')
+                
+                
+            #make train/validation data split
+            train_data = imported_data[imported_data.loc[:, 1] < datetime.datetime(year=int(year), month=int(month), day=int(day))]
+            print(train_data.shape)
+            vaildation_data = imported_data[imported_data.loc[:, 1] >= datetime.datetime(year=int(year), month=int(month), day=int(day))]
+            print(vaildation_data.shape)
+            print('Train/Validation split made.')
+            
+            #split X and Ys 
+            X_train = train_data.loc[:,2:]
+            X_valid = vaildation_data.loc[:,2:]
+            
+            y_train = train_data.loc[:,0]
+            y_valid = vaildation_data.loc[:,0]
+            print('Target and features split')
+            
+    except Exception as e:
+        trc = traceback.format_exc()
+        with open(os.path.join(output_path, 'failure'), 'w') as s:
+            s.write('Exception during data import: ' + str(e) + '\n' + trc)
+        # Printing this causes the exception to be in the training job logs, as well.
+        print('Exception during data import: ' + str(e) + '\n' + trc, file=sys.stderr)
+        # A non-zero exit code causes the training job to be marked as Failed.
+        sys.exit(255)  
+                    
+
+    try:
+        print('Start training.')
+        # Note that hyperparameters are always passed in as
+        # strings, so we need to do any necessary conversions.
+
+        hidden_layer_sizes = trainingParams.get('hidden_layer_sizes', None)
+        if hidden_layer_sizes is not None:
+            hidden_layer_sizes = (int(hidden_layer_sizes),)
+        else:
+            hidden_layer_sizes = (100,)
+
+
+        activation = trainingParams.get('activation', None)
+        if activation is not None:
+            activation = str(activation)
+        else:
+            activation = 'relu'
+
+  
+        solver = trainingParams.get('solver', None)
+        if solver is not None:
+            solver = str(solver)
+        else:
+            solver = 'adam'
+            
+
+        alpha = trainingParams.get('alpha', None)
+        if alpha is not None:
+            alpha = float(alpha)
+        else:
+            alpha = 0.0001
+            
+        batch_size = trainingParams.get('batch_size', None)
+        if batch_size is not None:
+            batch_size = int(batch_size)
+        else:
+            batch_size = 200
+        
+        
+        tol = trainingParams.get('tol', None)
+        if tol is not None:
+            tol = float(tol)
+        else:
+            tol = 1e-4                     
+                    
+
+            
+        if solver == 'sgd' or solver == 'adam':    
+            
+            learning_rate_init = trainingParams.get('learning_rate_init', None)
+            if learning_rate_init is not None:
+                learning_rate_init = float(learning_rate_init)
+            else:
+                learning_rate_init = 0.001
+                
+                
+            max_iter = trainingParams.get('max_iter', None)
+            if max_iter is not None:
+                max_iter = int(max_iter)
+            else:
+                max_iter = 200  
+                
+                
+            shuffle = trainingParams.get('shuffle', None)
+            if shuffle is not None:
+                shuffle = bool(shuffle)
+            else:
+                shuffle = True          
+            
+            early_stopping = trainingParams.get('early_stopping', None)
+            if early_stopping is not None:
+                early_stopping = bool(early_stopping)
+            else:
+                early_stopping = False
+                
+                
+            validation_fraction = trainingParams.get('validation_fraction', None)
+            if validation_fraction is not None:
+                validation_fraction = float(validation_fraction)
+            else:
+                validation_fraction = 0.1
+                
+                
+            n_iter_no_change = trainingParams.get('n_iter_no_change', None)
+            if n_iter_no_change is not None:
+                n_iter_no_change = int(n_iter_no_change)
+            else:
+                n_iter_no_change = 3   
+                
+
+                
+            if solver == 'sgd':
+                   
+                learning_rate = trainingParams.get('learning_rate', None)
+                if learning_rate is not None:
+                    learning_rate = str(learning_rate)
+                else:
+                    learning_rate = 'constant'
+                
+                
+                power_t = trainingParams.get('power_t', None)
+                if power_t is not None:
+                    power_t = float(power_t)
+                else:
+                    power_t = 0.5
+                    
+
+                momentum = trainingParams.get('momentum', None)
+                if momentum is not None:
+                    momentum = float(momentum)
+                else:
+                    momentum = 0.9       
+                    
+                nesterovs_momentum = trainingParams.get('nesterovs_momentum', None)
+                if nesterovs_momentum is not None:
+                    nesterovs_momentum = bool(nesterovs_momentum)
+                else:
+                    nesterovs_momentum = True           
+            
+                model = MLPClassifier(hidden_layer_sizes=hidden_layer_sizes,
+                                    activation=activation,
+                                    solver=solver,
+                                    alpha=alpha,
+                                    batch_size=batch_size,
+                                    tol=tol,
+                                    learning_rate_init=learning_rate_init,
+                                    max_iter=max_iter,
+                                    shuffle=shuffle,
+                                    early_stopping=early_stopping,
+                                    validation_fraction=validation_fraction,
+                                    n_iter_no_change=n_iter_no_change,
+                                    learning_rate=learning_rate,
+                                    power_t=power_t,
+                                    momentum=momentum,
+                                    nesterovs_momentum=nesterovs_momentum)   
+                
+            
+            
+            elif solver == 'adam':
+                
+                beta_1 = trainingParams.get('beta_1', None)
+                if beta_1 is not None:
+                    beta_1 = float(beta_1)
+                else:
+                    beta_1 = 0.9
+                    
+                    
+                beta_2 = trainingParams.get('beta_2', None)
+                if beta_2 is not None:
+                    beta_2 = float(beta_2)
+                else:
+                    beta_2 = 0.999            
+                    
+                    
+                epsilon = trainingParams.get('epsilon', None)
+                if epsilon is not None:
+                    epsilon = float(epsilon)
+                else:
+                    epsilon = 1e-8  
+            
+                model = MLPClassifier(hidden_layer_sizes=hidden_layer_sizes,
+                                    activation=activation,
+                                    solver=solver,
+                                    alpha=alpha,
+                                    batch_size=batch_size,
+                                    tol=tol,
+                                    learning_rate_init=learning_rate_init,
+                                    max_iter=max_iter,
+                                    shuffle=shuffle,
+                                    early_stopping=early_stopping,
+                                    validation_fraction=validation_fraction,
+                                    n_iter_no_change=n_iter_no_change,
+                                    beta_1=beta_1,
+                                    beta_2=beta_2,
+                                    epsilon=epsilon) 
+            
+        else:
+            model = MLPClassifier(hidden_layer_sizes=hidden_layer_sizes,
+                                activation=activation,
+                                solver=solver,
+                                alpha=alpha,
+                                batch_size=batch_size,
+                                tol=tol)    
+
+                                    
+        model = model.fit(X_train, y_train)
+
+        print('Training complete.')
+        
+        
+    except Exception as e:
+        # Write out an error file. This will be returned as the failureReason in the
+        # DescribeTrainingJob result.
+        trc = traceback.format_exc()
+        with open(os.path.join(output_path, 'failure'), 'w') as s:
+            s.write('Exception during training: ' + str(e) + '\n' + trc)
+        # Printing this causes the exception to be in the training job logs, as well.
+        print('Exception during training: ' + str(e) + '\n' + trc, file=sys.stderr)
+        # A non-zero exit code causes the training job to be marked as Failed.
+        sys.exit(255)
+        
+    try:
+        #testing model
+        print('Testing Model.')
+        y_pred = model.predict(X_valid)
+        
+        #model results
+        print('Model Results')
+        print(confusion_matrix(y_valid, y_pred))
+        print('Accuracy: ' + str(accuracy_score(y_valid, y_pred)))
+        
+        if len(y_valid.unique()) > 2:
+            print('Recall: ' + str(recall_score(y_valid, y_pred, average='weighted')))
+            print('Precision: ' + str(precision_score(y_valid, y_pred, average='weighted')))
+            print('F1-Score: ' + str(f1_score(y_valid, y_pred, average='weighted')))
+        else:
+            print('Recall: ' + str(recall_score(y_valid, y_pred)))
+            print('Precision: ' + str(precision_score(y_valid, y_pred)))
+            print('F1-Score: ' + str(f1_score(y_valid, y_pred)))            
+
+    
+        #other model attrubutes
+        print('Parameters: ' + str(model.get_params()))
+
+    except Exception as e:
+        # Write out an error file. This will be returned as the failureReason in the
+        # DescribeTrainingJob result.
+        trc = traceback.format_exc()
+        with open(os.path.join(output_path, 'failure'), 'w') as s:
+            s.write('Exception during testing: ' + str(e) + '\n' + trc)
+        # Printing this causes the exception to be in the training job logs, as well.
+        print('Exception during testing: ' + str(e) + '\n' + trc, file=sys.stderr)
+        # A non-zero exit code causes the training job to be marked as Failed.
+        sys.exit(255)   
+
+    try:
+        # save the model
+        with open(os.path.join(model_path, 'basic-neural-network-classification-model.pkl'), 'w') as out:
+            pickle.dump(model, out)
+
+    except Exception as e:
+        # Write out an error file. This will be returned as the failureReason in the
+        # DescribeTrainingJob result.
+        trc = traceback.format_exc()
+        with open(os.path.join(output_path, 'failure'), 'w') as s:
+            s.write('Exception during model export: ' + str(e) + '\n' + trc)
+        # Printing this causes the exception to be in the training job logs, as well.
+        print('Exception during model export: ' + str(e) + '\n' + trc, file=sys.stderr)
+        # A non-zero exit code causes the training job to be marked as Failed.
+        sys.exit(255) 
+        
+        
+if __name__ == '__main__':
+    train()
+
+    # A zero exit code causes the job to be marked a Succeeded.
+    sys.exit(0)
