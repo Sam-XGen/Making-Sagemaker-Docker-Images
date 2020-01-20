@@ -77,67 +77,64 @@ def train():
             train_X = scipy.sparse.load_npz(train_input_files[0])
             train_y = pd.read_csv(target_input_files[0], header=None)
             print('Text data was imported.')
+            
+            print('Split data into train and validation sets.')
+            X_train, X_valid, y_train, y_valid = train_test_split(train_X, train_y, test_size=0.1, random_state=42)
+            print('Data was split.')
+            
+            
         else:
             imported_data = pd.read_csv(train_input_files[0], header=None)
             print('Numeric data was imported.')
 
 
-
-        time_series = trainingParams.get('time_series', None)
-        if time_series is not None:
-            time_series = str(time_series)
-        else:
-            time_series = 'no'
+            print('Time series train/validation split.')
             
-    except Exception as e:
-        trc = traceback.format_exc()
-        with open(os.path.join(output_path, 'failure'), 'w') as s:
-            s.write('Exception during data import: ' + str(e) + '\n' + trc)
-        # Printing this causes the exception to be in the training job logs, as well.
-        print('Exception during data import: ' + str(e) + '\n' + trc, file=sys.stderr)
-        # A non-zero exit code causes the training job to be marked as Failed.
-        sys.exit(255)  
-        
-        
-        
-        print('Time series train/validation split.')
-    try:    
-        #determine if the data has a time series
-        if time_series == 'no' or time_series == 'false':
-            #split data into train and vaildation data
-            X_train, X_valid, y_train, y_valid = train_test_split(imported_data.loc[:,1:], imported_data.loc[:,0], test_size=0.1, random_state=42)
-        
-        else:
-            try:
-                imported_data.loc[:, 1] = imported_data.loc[:, 1].map(lambda x: datetime.datetime.strptime(x, '%Y-%m-%d'))
-                print('Date was converted to datetime')
-            except:
-                print('Date is already datatime.')
+            time_series = trainingParams.get('time_series', None)
+            if time_series is not None:
+                time_series = str(time_series)
+            else:
+                time_series = 'no'
             
             
-            try:
-                year, month, day = time_series.split('-')
-                print('Date was split by -')
-            except:
-                year, month, day = time_series.split('/')
-                print('Date was split by /')
+            #determine if the data has a time series
+            if time_series == 'no' or time_series == 'false':
+                #split data into train and vaildation data
+                print('Split data into train and validation sets.')
+                X_train, X_valid, y_train, y_valid = train_test_split(imported_data.loc[:,1:], imported_data.loc[:,0], test_size=0.1, random_state=42)
+                print('Data was split.')
+            else:
+                try:
+                    imported_data.loc[:, 1] = imported_data.loc[:, 1].map(lambda x: datetime.datetime.strptime(x, '%Y-%m-%d'))
+                    print('Date was converted to datetime')
+                except:
+                    print('Date is already datatime.')
                 
                 
-            #make train/validation data split
-            train_data = imported_data[imported_data.loc[:, 1] < datetime.datetime(year=int(year), month=int(month), day=int(day))]
-            print(train_data.shape)
-            vaildation_data = imported_data[imported_data.loc[:, 1] >= datetime.datetime(year=int(year), month=int(month), day=int(day))]
-            print(vaildation_data.shape)
-            print('Train/Validation split made.')
-            
-            #split X and Ys 
-            X_train = train_data.loc[:,2:]
-            X_valid = vaildation_data.loc[:,2:]
-            
-            y_train = train_data.loc[:,0]
-            y_valid = vaildation_data.loc[:,0]
-            print('Target and features split')
-            
+                try:
+                    year, month, day = time_series.split('-')
+                    print('Date was split by -')
+                except:
+                    year, month, day = time_series.split('/')
+                    print('Date was split by /')
+                    
+                    
+                #make train/validation data split
+                train_data = imported_data[imported_data.loc[:, 1] < datetime.datetime(year=int(year), month=int(month), day=int(day))]
+                print(train_data.shape)
+                vaildation_data = imported_data[imported_data.loc[:, 1] >= datetime.datetime(year=int(year), month=int(month), day=int(day))]
+                print(vaildation_data.shape)
+                print('Train/Validation split made.')
+                
+                #split X and Ys 
+                X_train = train_data.loc[:,2:]
+                X_valid = vaildation_data.loc[:,2:]
+                
+                y_train = train_data.loc[:,0]
+                y_valid = vaildation_data.loc[:,0]
+                print('Target and features split')
+                
+                
     except Exception as e:
         trc = traceback.format_exc()
         with open(os.path.join(output_path, 'failure'), 'w') as s:
@@ -236,7 +233,7 @@ def train():
         print(confusion_matrix(y_valid, y_pred))
         print('Accuracy: ' + str(accuracy_score(y_valid, y_pred)))
         
-        if len(y_valid.unique()) > 2:
+        if len(y_valid.loc[:, 0].unique()) > 2:
             print('Recall: ' + str(recall_score(y_valid, y_pred, average='weighted')))
             print('Precision: ' + str(precision_score(y_valid, y_pred, average='weighted')))
             print('F1-Score: ' + str(f1_score(y_valid, y_pred, average='weighted')))
